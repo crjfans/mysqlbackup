@@ -1,8 +1,8 @@
 #!/bin/bash
 ########################################################################
-# script name: mysql-bak.sh                                            #
+# script name: mysqlbackup.sh                                            #
 # function: use this script to make mysql backups                      #
-# useage: mysql-bak.sh -a [-e -d -e ...]                               #
+# useage: mysqlbackup.sh -a [-e -d -e ...]                               #
 # version: v0.1                                                        #
 # created date: 2016/1/6                                               #
 # author: JayZhou                                                      #
@@ -39,11 +39,13 @@ echo "  Options:
                  Example: -d 'mydb1 mydb2'
     -t value[s]  Generate backups of single/multi table[s] of single database.
                  Example: -t 'mydb1 mytable1'
-    -b           Generate backups of binlog.
+    -b           Generate backups of binlog for each database.
+    -h           Generate backups of binlog use copy command.
     -c value     Clean up dump backups beyond n(n must be integer) days ago.
                  Example: -c 7
     -f value     Clean up binlog backups beyond n(n must be integer) days ago.
                  Example: -f 7
+    -g           Flush binary logs
     -p           Create mysql password for dumping
   Options must be given as -option ['value1 [value2] ...'] or -option value, not -option=value.
 "
@@ -173,7 +175,7 @@ function check_init_value()
 
 ########################################################################
 # routine name: init_var
-# function: import variables in mysql-bak.cnf
+# function: import variables in mysqlbackup.cnf
 ########################################################################
 function init_var()
 {
@@ -192,6 +194,20 @@ function init_var()
 			exit 0
 		fi
         fi
+}
+
+########################################################################
+# routine name: flush_bin_log
+# function: Initialize the CMD_DUMP command
+########################################################################
+function flush_bin_log()
+{
+        #get user and password from password file
+        USER=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $1}'`
+        PASSWD=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $2}'`
+        #if turned on the log_bin,add a parameter:'--master-data=2' to CMD_DUMP
+        `$CMD_MYSQL -u$USER -p$PASSWD -N -s -e "flush binary logs"`
+        exec_msg "$?" "successfully flush binary logs!" "failed to flush binary logs! check your password!"
 }
 
 ########################################################################
@@ -336,6 +352,56 @@ function backup_binlog()
 }
 
 ########################################################################
+# routine name: backup_binlog
+# function: generate backup for binlog
+########################################################################
+function backup_binlog_file()
+{
+	#flush binary logs
+	flush_bin_log
+        #check whether the binlog backup dir exists,and create one
+        if [ ! -d $DIR_BACKUP_BINLOG ]; then
+                echo "$PREFIX_NOTICE:create the binlog backup directory [$DIR_BACKUP_BINLOG] now..."
+                mkdir -p $DIR_BACKUP_BINLOG
+                exec_msg "$?" "create binlog backup directory successfully!" ""
+        fi
+        #check whether the binlog index file exists
+        if [ ! -r ${FILE_BINLOG_INDEX} ]; then
+                exec_msg "1" "" "the file ${FILE_BINLOG_INDEX} is not found,please check ${CONFIG_FILE} or my.cnf file."
+        fi
+	#find begin and end index of binlog file to backup
+	BACK_BINLOG_INDEX=$DIR_BACKUP_BINLOG/mysql-bin-backup.index
+	if [ -r $BACK_BINLOG_INDEX ];then
+		BACKED_BINLOG_FILE=$(tail -n 1 $BACK_BINLOG_INDEX)
+		BACK_BINLOG_INDEX_BEGIN_NUM=$(grep -n $BACKED_BINLOG_FILE $FILE_BINLOG_INDEX | awk -F':' '{print $1}')
+		if [ -z $BACK_BINLOG_INDEX_BEGIN_NUM ];then
+			BACK_BINLOG_INDEX_BEGIN_NUM=0
+		fi
+	else
+		BACK_BINLOG_INDEX_BEGIN_NUM=0
+	fi
+	BACK_BINLOG_INDEX_END_NUM=$(wc -l ${FILE_BINLOG_INDEX} | awk '{print $1}')
+	BINLOG_FILE=""
+	#begin backup binlog file
+        eval $BACKUP_START_MSG
+        for BINLOG_FILE in $(cat $FILE_BINLOG_INDEX | awk "NR > $BACK_BINLOG_INDEX_BEGIN_NUM && NR < $BACK_BINLOG_INDEX_END_NUM")
+        do
+        	BINLOG_FILE=$(dirname ${FILE_BINLOG_INDEX})/$BINLOG_FILE
+        	BACKUP_BINLOG_FILE=$DIR_BACKUP_BINLOG/$(date +%Y%m%d%H%M%S).${HOSTNAME}.`basename ${BINLOG_FILE}`
+        	cp $BINLOG_FILE $BACKUP_BINLOG_FILE
+        	exec_msg "$?" "" "fail to generate binlog backup:fail to copy $BINLOG_FILE to $DIR_BACKUP_BINLOG"
+		echo `basename ${BINLOG_FILE}` >> $BACK_BINLOG_INDEX
+		gzip -f $BACKUP_BINLOG_FILE
+		exec_msg "$?" "" "fail to compress binlog backup!"
+		exec_msg "$?" "generate binlog backup:${BACKUP_BINLOG_FILE} successfully!" ""
+	done
+	if [ -z $BINLOG_FILE ];then
+		echo "$PREFIX_NOTICE:no binlog file need to be backup."
+	fi
+        eval ${BACKUP_FINISH_MSG}
+}
+
+########################################################################
 # routine name: backup_dump_clean
 # function: clean up dumping backups beyond n days
 ########################################################################
@@ -375,7 +441,7 @@ if [ $# -eq 0 ]; then
         usage_notes
 else
         init_var
-        while getopts :aed:t:bc:f:p varname
+        while getopts :aed:t:bhc:f:pg varname
         do
 		case $varname in
                 	a)  check_init_value; backup_all; ;;
@@ -383,8 +449,10 @@ else
                 	d)  check_init_value; backup_db; ;;
                 	t)  check_init_value; backup_dt; ;;
                 	b)  check_init_value; backup_binlog; ;;
+                	h)  check_init_value; backup_binlog_file; ;;
                 	c)  check_init_value; backup_dump_clean; ;;
                 	f)  check_init_value; backup_binlog_clean; ;;
+                	g)  check_init_value; flush_bin_log; ;;
                 	p)  create_passwd; ;;
                 	*)  echo "$PREFIX_ERROR:wrong parameters"; usage_notes;
 		esac
