@@ -1,8 +1,8 @@
 #!/bin/bash
 ########################################################################
-# script name: mysqlbackup.sh                                            #
+# script name: mysqlbackup.sh                                          #
 # function: use this script to make mysql backups                      #
-# useage: mysqlbackup.sh -a [-e -d -e ...]                               #
+# useage: mysqlbackup.sh -a [-e -d -e ...]                             #
 # version: v0.1                                                        #
 # created date: 2016/1/6                                               #
 # author: JayZhou                                                      #
@@ -223,12 +223,14 @@ function init_dump()
 	LOGBIN_STATUS=`$CMD_MYSQL -u$USER -p$PASSWD -N -s -e "SHOW VARIABLES LIKE 'log_bin'" | awk '{print $2}'`
 	exec_msg "$?" "" "failed to get the mysql variable:log_bin! check your password!"
 	if [ $LOGBIN_STATUS = "ON" ]; then
-		MASTER='--master-data=2'
+		#flush logs and get binlog position
+		MASTER='--master-data=2 -F'
 	else
 		MASTER=' '
 	fi
 	#Initialize the CMD_DUMP command
-	CMD_DUMP="$CMD_MYSQLDUMP -u$USER -p$PASSWD -x -R $MASTER --socket=$SOCKET --default-character-set=utf8"
+	#--master-data=1 -F -d --skip-add-drop-table
+	CMD_DUMP="$CMD_MYSQLDUMP -u$USER -p$PASSWD --skip-add-drop-table -x -R $MASTER --socket=$SOCKET --default-character-set=utf8"
 }
 
 ########################################################################
@@ -352,13 +354,11 @@ function backup_binlog()
 }
 
 ########################################################################
-# routine name: backup_binlog
-# function: generate backup for binlog
+# routine name: backup_binlog_file
+# function: copy binlog files
 ########################################################################
 function backup_binlog_file()
 {
-	#flush binary logs
-	flush_bin_log
         #check whether the binlog backup dir exists,and create one
         if [ ! -d $DIR_BACKUP_BINLOG ]; then
                 echo "$PREFIX_NOTICE:create the binlog backup directory [$DIR_BACKUP_BINLOG] now..."
