@@ -224,13 +224,14 @@ function init_dump()
 	exec_msg "$?" "" "failed to get the mysql variable:log_bin! check your password!"
 	if [ $LOGBIN_STATUS = "ON" ]; then
 		#flush logs and get binlog position
-		MASTER='--master-data=2 -F'
+		MASTER='--master-data=2'
 	else
 		MASTER=' '
 	fi
 	#Initialize the CMD_DUMP command
 	#--master-data=1 -F -d --skip-add-drop-table
 	CMD_DUMP="$CMD_MYSQLDUMP -u$USER -p$PASSWD --skip-add-drop-table -x -R $MASTER --socket=$SOCKET --default-character-set=utf8"
+	CMD_DUMP_FLUSH_BINLOG="$CMD_MYSQLDUMP -u$USER -p$PASSWD --skip-add-drop-table -F -x -R $MASTER --socket=$SOCKET --default-character-set=utf8"
 }
 
 ########################################################################
@@ -242,13 +243,12 @@ function backup_all()
 	init_dump
 	DUMP_FILE=${DIR_BACKUP}/`${TIME}`.${HOSTNAME}.all.sql
 	eval ${BACKUP_START_MSG}
-	$CMD_DUMP -A  > $DUMP_FILE
+	$CMD_DUMP_FLUSH_BINLOG -A  > $DUMP_FILE
 	exec_msg "$?" "generate backup:$DUMP_FILE successfully!" "fail to generate backup!@rm -rf $DUMP_FILE"
 	DUMP_FILE_NEW=${DIR_BACKUP}/`tail -n 1 $DUMP_FILE |awk '{print $5"."$6}'`.${HOSTNAME}.all.sql
 	mv $DUMP_FILE $DUMP_FILE_NEW
 	gzip -f $DUMP_FILE_NEW
 	exec_msg "$?" "" "fail to compress backup!"
-	sleep 5
 	eval ${BACKUP_FINISH_MSG}
 }
 
@@ -271,6 +271,7 @@ function backup_each()
 		exec_msg "$?" "" "fail to compress backup!"
 	done
 	eval ${BACKUP_FINISH_MSG}
+	flush_bin_log
 }
 
 ########################################################################
@@ -284,7 +285,7 @@ function backup_db()
 	DUMP_FILE_POSTFIX=`echo "${OPTARG}" | grep -o "[^ ]\+\( \+[^ ]\+\)*" | sed 's/[ ][ ]*/:/g'`.sql
 	DUMP_FILE=${DIR_BACKUP}/`${TIME}`.${DUMP_FILE_POSTFIX}
 	eval $BACKUP_START_MSG
-	$CMD_DUMP --databases $OPTARG > $DUMP_FILE
+	$CMD_DUMP_FLUSH_BINLOG --databases $OPTARG > $DUMP_FILE
 	exec_msg "$?" "generate backup:$DUMP_FILE successfully!" "fail to generate backup!@rm -rf $DUMP_FILE"
 	DUMP_FILE_NEW=${DIR_BACKUP}/`tail -n 1 $DUMP_FILE | awk '{print $5"."$6}'`.${DUMP_FILE_POSTFIX}
 	mv $DUMP_FILE $DUMP_FILE_NEW
@@ -373,7 +374,7 @@ function backup_binlog_file()
 	BACK_BINLOG_INDEX=$DIR_BACKUP_BINLOG/mysql-bin-backup.index
 	if [ -r $BACK_BINLOG_INDEX ];then
 		BACKED_BINLOG_FILE=$(tail -n 1 $BACK_BINLOG_INDEX)
-		BACK_BINLOG_INDEX_BEGIN_NUM=$(grep -n $BACKED_BINLOG_FILE $FILE_BINLOG_INDEX | awk -F':' '{print $1}')
+		BACK_BINLOG_INDEX_BEGIN_NUM=$(grep -n "$BACKED_BINLOG_FILE" $FILE_BINLOG_INDEX | awk -F':' '{print $1}')
 		if [ -z $BACK_BINLOG_INDEX_BEGIN_NUM ];then
 			BACK_BINLOG_INDEX_BEGIN_NUM=0
 		fi
@@ -382,12 +383,14 @@ function backup_binlog_file()
 	fi
 	BACK_BINLOG_INDEX_END_NUM=$(wc -l ${FILE_BINLOG_INDEX} | awk '{print $1}')
 	BINLOG_FILE=""
+	BINLOG_LAST_CHANGE_TIME=""
 	#begin backup binlog file
         eval $BACKUP_START_MSG
         for BINLOG_FILE in $(cat $FILE_BINLOG_INDEX | awk "NR > $BACK_BINLOG_INDEX_BEGIN_NUM && NR < $BACK_BINLOG_INDEX_END_NUM")
         do
         	BINLOG_FILE=$(dirname ${FILE_BINLOG_INDEX})/$BINLOG_FILE
-        	BACKUP_BINLOG_FILE=$DIR_BACKUP_BINLOG/$(date +%Y%m%d%H%M%S).${HOSTNAME}.`basename ${BINLOG_FILE}`
+		BINLOG_LAST_CHANGE_TIME=$(stat ${BINLOG_FILE}|grep "Modify"|cut -d " " -f 2,3|cut -d "." -f 1|sed 's/ /./g')
+        	BACKUP_BINLOG_FILE=$DIR_BACKUP_BINLOG/${BINLOG_LAST_CHANGE_TIME}.${HOSTNAME}.`basename ${BINLOG_FILE}`
         	cp $BINLOG_FILE $BACKUP_BINLOG_FILE
         	exec_msg "$?" "" "fail to generate binlog backup:fail to copy $BINLOG_FILE to $DIR_BACKUP_BINLOG"
 		echo `basename ${BINLOG_FILE}` >> $BACK_BINLOG_INDEX
