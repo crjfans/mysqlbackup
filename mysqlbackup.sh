@@ -90,12 +90,21 @@ function create_passwd()
 	if [ ! -d $DIR_PASSWD ]; then
 		mkdir -p $DIR_PASSWD
 	fi
-        echo -n "Please enter MySQL(user=root)'s password:"
+        echo -n "Please enter MySQL user:"
+        read -s -a MYSQL_USER
+	echo ""
+        echo -n "Please enter ${MYSQL_USER}'s password:"
         read -s -a MYSQL_PASSWD
 	echo ""
-	$CMD_MYSQL -uroot -p$MYSQL_PASSWD -N -s -e "select user()" >/dev/null 2>&1
-	exec_msg "$?" "" "the password of root is wrong!"
-	echo "root $MYSQL_PASSWD" |  $CMD_OPENSSL aes-128-cbc -k $HOSTNAME -base64 > $FILE_PASSWD && chmod 600 $FILE_PASSWD
+        echo -n "Please enter host's IP or hostname:"
+        read -s -a MYSQL_HOST
+	echo ""
+        echo -n "Please enter MySQL port:"
+        read -s -a MYSQL_PORT
+	echo ""
+	$CMD_MYSQL -u$MYSQL_USER -p$MYSQL_PASSWD -h$MYSQL_HOST -P$MYSQL_PORT -N -s -e "select user()" >/dev/null 2>&1
+	exec_msg "$?" "" "the user or password is wrong!"
+	echo "$MYSQL_USER $MYSQL_PASSWD $MYSQL_HOST $MYSQL_PORT" |  $CMD_OPENSSL aes-128-cbc -k $HOSTNAME -base64 > $FILE_PASSWD && chmod 600 $FILE_PASSWD
 	exec_msg "$?" "create the password file successfully!" ""
 }
 
@@ -205,8 +214,10 @@ function flush_bin_log()
         #get user and password from password file
         USER=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $1}'`
         PASSWD=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $2}'`
+        HOST=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $3}'`
+        PORT=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $4}'`
         #if turned on the log_bin,add a parameter:'--master-data=2' to CMD_DUMP
-        `$CMD_MYSQL -u$USER -p$PASSWD -N -s -e "flush binary logs"`
+        `$CMD_MYSQL -u$USER -p$PASSWD -h$HOST -P$PORT -N -s -e "flush binary logs"`
         exec_msg "$?" "successfully flush binary logs!" "failed to flush binary logs! check your password!"
 }
 
@@ -219,8 +230,10 @@ function init_dump()
 	#get user and password from password file
 	USER=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $1}'`
 	PASSWD=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $2}'`
+        HOST=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $3}'`
+        PORT=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $4}'`
 	#if turned on the log_bin,add a parameter:'--master-data=2' to CMD_DUMP
-	LOGBIN_STATUS=`$CMD_MYSQL -u$USER -p$PASSWD -N -s -e "SHOW VARIABLES LIKE 'log_bin'" | awk '{print $2}'`
+	LOGBIN_STATUS=`$CMD_MYSQL -u$USER -p$PASSWD -h$HOST -P$PORT -N -s -e "SHOW VARIABLES LIKE 'log_bin'" | awk '{print $2}'`
 	exec_msg "$?" "" "failed to get the mysql variable:log_bin! check your password!"
 	if [ $LOGBIN_STATUS = "ON" ]; then
 		#flush logs and get binlog position
@@ -230,8 +243,8 @@ function init_dump()
 	fi
 	#Initialize the CMD_DUMP command
 	#--master-data=1 -F -d --skip-add-drop-table
-	CMD_DUMP="$CMD_MYSQLDUMP -u$USER -p$PASSWD --skip-add-drop-table -x -R $MASTER --socket=$SOCKET --default-character-set=utf8"
-	CMD_DUMP_FLUSH_BINLOG="$CMD_MYSQLDUMP -u$USER -p$PASSWD --skip-add-drop-table -F -x -R $MASTER --socket=$SOCKET --default-character-set=utf8"
+	CMD_DUMP="$CMD_MYSQLDUMP -u$USER -p$PASSWD -h$HOST -P$PORT --skip-add-drop-table -x -R $MASTER --socket=$SOCKET --default-character-set=utf8"
+	CMD_DUMP_FLUSH_BINLOG="$CMD_MYSQLDUMP -u$USER -p$PASSWD -h$HOST -P$PORT --skip-add-drop-table -F -x -R $MASTER --socket=$SOCKET --default-character-set=utf8"
 }
 
 ########################################################################
@@ -260,7 +273,7 @@ function backup_each()
 {
 	init_dump
 	eval $BACKUP_START_MSG
-	for db in $($CMD_MYSQL -u$USER -p$PASSWD -N -s -e "SHOW DATABASES"|egrep -w $LIST_INCLUDE_DB_DUMP)
+	for db in $($CMD_MYSQL -u$USER -p$PASSWD -h$HOST -P$PORT -N -s -e "SHOW DATABASES"|egrep -w $LIST_INCLUDE_DB_DUMP)
 	do
 		DUMP_FILE=${DIR_BACKUP}/`${TIME}`.${HOSTNAME}.${db}.sql
 		$CMD_DUMP $db --databases > $DUMP_FILE
@@ -323,6 +336,8 @@ function backup_binlog()
 {
 	USER=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $1}'`
 	PASSWD=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $2}'`
+        HOST=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $3}'`
+        PORT=`cat $FILE_PASSWD | $CMD_OPENSSL aes-128-cbc -d -k $HOSTNAME -base64 | awk '{print $4}'`
 	BACPUP_BINLOG_START_TIME=$(date -d "24 hour ago $(date +%Y%m%d)" +%Y-%m-%d\ %H:%M:%S)
 	BACPUP_BINLOG_STOP_TIME=$(date -d "1 second ago $(date +%Y%m%d)" +%Y-%m-%d\ %H:%M:%S)
 	#check whether the binlog backup dir exists,and create one
@@ -336,7 +351,7 @@ function backup_binlog()
                 exec_msg "1" "" "the file ${FILE_BINLOG_INDEX} is not found,please check ${CONFIG_FILE} or my.cnf file."
         fi
 	eval $BACKUP_START_MSG
-	for db in $($CMD_MYSQL -u$USER -p$PASSWD -N -s -e "SHOW DATABASES"|egrep -w $LIST_INCLUDE_DB_BINLOG)
+	for db in $($CMD_MYSQL -u$USER -p$PASSWD -h$HOST -P$PORT -N -s -e "SHOW DATABASES"|egrep -w $LIST_INCLUDE_DB_BINLOG)
 	do
 		BACKUP_BINLOG_FILE=${DIR_BACKUP_BINLOG}/$(date -d "24 hour ago" +%Y%m%d).${HOSTNAME}.${db}.binlog
 		#clean the BACKUP_BINLOG_FILE
